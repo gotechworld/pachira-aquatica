@@ -121,7 +121,7 @@ jobs:
       - name: Severity gate (fail on High/Critical, allow Med/Low with override)
         id: gate
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.VCS_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           OVERRIDE_LABEL: "security-override"
         run: |

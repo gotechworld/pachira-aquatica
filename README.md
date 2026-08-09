@@ -144,6 +144,7 @@ forge script script/Deploy.s.sol:DeployScript \
 ⚙️ CI/CD & Security Pipeline
 
 This repository features a highly strict, automated CI/CD pipeline located at `.github/workflows/security.yml`. It runs on all __Pull Requests__ and __Pushes__.
+Also, add the GHA secret `(VCS_TOKEN)` as Repository secret.
 
 <br/>
 
