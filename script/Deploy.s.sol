@@ -10,10 +10,10 @@ contract DeployScript is Script {
 
     function run() public {
         vm.startBroadcast();
-        
+
         // Deploy the token with the Sepolia Oracle address
         PachiraAquatica token = new PachiraAquatica(SEPOLIA_ETH_USD_ORACLE);
-        
+
         vm.stopBroadcast();
 
         console.log("Pachira Aquatica deployed to:", address(token));

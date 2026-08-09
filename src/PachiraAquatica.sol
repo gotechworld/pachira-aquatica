@@ -7,18 +7,15 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 // Chainlink-style Aggregator Interface
 interface IPriceFeed {
-    function latestRoundData() external view returns (
-        uint80 roundId,
-        int256 answer,
-        uint256 startedAt,
-        uint256 updatedAt,
-        uint80 answeredInRound
-    );
+    function latestRoundData()
+        external
+        view
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 }
 
 contract PachiraAquatica is ERC20, Ownable, ReentrancyGuard {
     IPriceFeed public priceFeed;
-    
+
     // Security: Timeout to prevent stale oracle data manipulation
     uint256 public constant ORACLE_TIMEOUT = 1 hours;
 
@@ -44,19 +41,13 @@ contract PachiraAquatica is ERC20, Ownable, ReentrancyGuard {
      * @dev Oracle Manipulation Defense: Fetches price and checks for staleness or invalid data.
      */
     function getLatestPrice() public view returns (int256) {
-        (
-            uint80 roundId, 
-            int256 price, 
-            , 
-            uint256 updatedAt, 
-            uint80 answeredInRound
-        ) = priceFeed.latestRoundData();
+        (uint80 roundId, int256 price,, uint256 updatedAt, uint80 answeredInRound) = priceFeed.latestRoundData();
 
         // Check 1: Price must be greater than 0
         require(price > 0, "Oracle: Invalid price");
         // Check 2: Round must be complete
         require(answeredInRound >= roundId, "Oracle: Stale round");
-        
+
         // Note: Validators can manipulate block.timestamp by ~15s, but this is negligible against a 1-hour timeout.
         // forge-lint: disable-next-line(block-timestamp)
         require(block.timestamp - updatedAt <= ORACLE_TIMEOUT, "Oracle: Timeout");
@@ -71,7 +62,7 @@ contract PachiraAquatica is ERC20, Ownable, ReentrancyGuard {
         require(msg.value > 0, "Must send ETH");
 
         int256 ethPrice = getLatestPrice();
-        
+
         // Note: Casting to uint256 is safe because getLatestPrice() requires price > 0.
         // forge-lint: disable-next-line(unsafe-typecast)
         uint256 tokensToMint = (msg.value * uint256(ethPrice)) / 1e8;
@@ -89,7 +80,7 @@ contract PachiraAquatica is ERC20, Ownable, ReentrancyGuard {
         uint256 balance = address(this).balance;
         require(balance > 0, "No ETH to withdraw");
 
-        (bool success, ) = payable(owner()).call{value: balance}("");
+        (bool success,) = payable(owner()).call{value: balance}("");
         require(success, "Withdraw failed");
     }
 }

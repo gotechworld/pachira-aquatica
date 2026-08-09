@@ -32,9 +32,7 @@ contract MockOracle {
         updatedAt = _time;
     }
 
-    function latestRoundData() external view returns (
-        uint80, int256, uint256, uint256, uint80
-    ) {
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
         return (roundId, price, 0, updatedAt, answeredInRound);
     }
 }
@@ -48,7 +46,7 @@ contract PachiraAquaticaTest is Test {
         oracle = new MockOracle(2000 * 1e8); // $2000
         token = new PachiraAquatica(address(oracle));
     }
-    
+
     // Fix 2: Added receive function so the test contract can accept ETH during withdraw
     receive() external payable {}
 
@@ -83,9 +81,9 @@ contract PachiraAquaticaTest is Test {
     function testBuyTokens() public {
         uint256 ethSent = 0.01 ether;
         uint256 expectedTokens = (ethSent * 2000 * 1e8) / 1e8; // 20 tokens
-        
+
         token.buyTokens{value: ethSent}();
-        
+
         assertEq(token.balanceOf(owner), 1000000 * 10 ** 18 + expectedTokens);
         assertEq(address(token).balance, ethSent);
     }
@@ -93,10 +91,10 @@ contract PachiraAquaticaTest is Test {
     // Test: Authentication & Re-entrancy Withdraw (0.01 ETH)
     function testWithdrawEth() public {
         token.buyTokens{value: 0.01 ether}();
-        
+
         uint256 ownerBalBefore = owner.balance;
         token.withdrawEth();
-        
+
         assertEq(address(token).balance, 0);
         assertGt(owner.balance, ownerBalBefore);
     }
@@ -115,9 +113,9 @@ contract Fuzz is Test {
 
     function testFuzz_BuyTokens(uint256 ethAmount) public {
         vm.assume(ethAmount > 0 && ethAmount <= 1000 ether);
-        
+
         token.buyTokens{value: ethAmount}();
-        
+
         // Ensure balance increased correctly (Integer overflow implicitly tested by 0.8.x)
         assertGt(token.balanceOf(owner), 1000000 * 10 ** 18);
     }
