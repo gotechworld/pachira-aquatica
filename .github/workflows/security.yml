@@ -1,0 +1,352 @@
+name: Smart Contract Security (Sepolia)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+  security-events: write
+
+env:
+  FOUNDRY_PROFILE: ci
+  SOLHINT_CONFIG: .solhint.json
+  SLITHER_OUT: reports/slither.sarif
+  COVERAGE_OUT: reports/coverage
+  FUZZ_RUNS: 10000
+
+jobs:
+  # ----------------------------------------------------------------
+  # Stage 1 — Lint & Format
+  # ----------------------------------------------------------------
+  lint:
+    name: "1 · Lint & Format"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install Node tooling
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24" # Updated to Node 24 to fix deprecation warning
+
+      - name: Install npm dependencies (if available)
+        run: |
+          if [ -f package.json ]; then
+            if [ -f package-lock.json ]; then
+              npm ci
+            else
+              npm install
+            fi
+          else
+            echo "No package.json found, skipping npm install."
+          fi
+
+      - name: Format check (forge fmt)
+        run: forge fmt --check
+
+      - name: Solhint (security rule set)
+        run: |
+          mkdir -p reports
+          npx solhint 'src/**/*.sol' 'test/**/*.sol' \
+            --config .solhint.json \
+            --formatter json > reports/solhint.json || true
+          npx solhint 'src/**/*.sol' 'test/**/*.sol' \
+            --config .solhint.json \
+            --max-warnings 0
+
+      - name: Upload solhint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: solhint-report
+          path: reports/solhint.json
+          retention-days: 30
+
+  # ----------------------------------------------------------------
+  # Stage 2 — Static Analysis (Slither)
+  # ----------------------------------------------------------------
+  static-analysis:
+    name: "2 · Static Analysis"
+    runs-on: ubuntu-latest
+    needs: lint # Depends on Stage 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Slither
+        run: pipx install slither-analyzer
+
+      - name: Compile contracts
+        run: forge build
+
+      - name: Run Slither (SARIF + JSON)
+        run: |
+          mkdir -p reports
+          slither . \
+            --foundry-out-dir out \
+            --sarif ${{ env.SLITHER_OUT }} \
+            --json reports/slither.json \
+            --filter-paths "lib/|test/|script/" \
+            --exclude-informational || true
+
+      - name: Severity gate (fail on High/Critical, allow Med/Low with override)
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OVERRIDE_LABEL: "security-override"
+        run: |
+          python3 .github/scripts/slither_gate.py \
+            --json reports/slither.json \
+            --pr "${PR_NUMBER:-0}" \
+            --override-label "$OVERRIDE_LABEL"
+
+      - name: Auto-create issue for Medium+ findings
+        if: steps.gate.outputs.medium_plus_count != '0'
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "[Security] Medium+ findings on ${{ github.ref_name }} @ ${{ github.sha }}"
+          content-filepath: reports/medium_plus_findings.md
+          labels: security, auto-generated, needs-triage
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ env.SLITHER_OUT }}
+
+      - name: Upload Slither artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slither-report
+          path: |
+            reports/slither.sarif
+            reports/slither.json
+            reports/medium_plus_findings.md
+          retention-days: 90
+
+  # ----------------------------------------------------------------
+  # Stage 3 — Unit & Invariant Tests
+  # ----------------------------------------------------------------
+  test:
+    name: "3 · Unit & Invariant Tests"
+    runs-on: ubuntu-latest
+    needs: static-analysis # Depends on Stage 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0  # <--- ADD THIS LINE to download full git history
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Run unit tests
+        run: forge test -vvv --summary
+
+      - name: Run invariant tests
+        run: forge test --match-contract Invariant --fuzz-runs ${{ env.FUZZ_RUNS }} -vvv
+
+      - name: Generate coverage
+        run: |
+          forge coverage --report lcov
+
+      - name: Enforce 90% branch coverage on NEW code
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 .github/scripts/coverage_gate.py \
+            --base "$BASE_SHA" \
+            --head "$GITHUB_SHA" \
+            --lcov lcov.info \
+            --threshold 90
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            lcov.info
+          retention-days: 30
+
+  # ----------------------------------------------------------------
+  # Stage 4 — Dedicated Fuzz Tests (Echidna / Foundry invariants)
+  # ----------------------------------------------------------------
+  fuzz:
+    name: "4 · Fuzz Tests"
+    runs-on: ubuntu-latest
+    needs: test # Depends on Stage 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Long fuzz run (targeted properties)
+        run: |
+          forge test \
+            --match-contract Fuzz \
+            --fuzz-runs ${{ env.FUZZ_RUNS }} \
+            -vvv
+
+      # NOTE: Echidna step removed for now. 
+      # Re-add it once you have echidna_ property tests in your contracts.
+
+      - name: Upload fuzz corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: |
+            cache/fuzz/
+          if-no-files-found: ignore 
+          retention-days: 14
+
+  # ----------------------------------------------------------------
+  # Stage 5 — Dependency Scanning
+  # ----------------------------------------------------------------
+  dependency-scan:
+    name: "5 · Dependency Scan"
+    runs-on: ubuntu-latest
+    needs: fuzz # Depends on Stage 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Audit npm deps (if package.json present)
+        run: |
+          mkdir -p reports
+          if [ -f package.json ]; then
+            npm audit --omit=dev --json > reports/npm-audit.json || true
+          fi
+
+      - name: Audit Foundry / solc version advisories
+        run: |
+          python3 .github/scripts/dep_scan.py \
+            --foundry-foundry-toml foundry.toml \
+            --remappings remappings.txt \
+            --out reports/dep-audit.json
+
+      - name: pip-audit (Slither / tooling deps)
+        run: |
+          pipx install pip-audit
+          pip-audit -r requirements.txt -f json -o reports/pip-audit.json || true
+
+      - name: Fail on High/Critical vulnerabilities
+        run: |
+          python3 .github/scripts/vuln_gate.py \
+            --npm reports/npm-audit.json \
+            --pip reports/pip-audit.json \
+            --dep reports/dep-audit.json
+
+      - name: Upload dependency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-report
+          path: reports/
+          retention-days: 30
+
+  # ----------------------------------------------------------------
+  # Stage 6 — Manual Review Gate (Testnet Deployment Approval)
+  # ----------------------------------------------------------------
+  manual-review:
+    name: "6 · Manual Review Gate"
+    runs-on: ubuntu-latest
+    needs: dependency-scan # Depends on Stage 5
+    environment: 
+      name: sepolia-review-gate
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify pre-deployment checklist sign-off
+        env:
+          AUDIT_CHECKLIST_PATH: .github/testnet-deploy-checklist.md
+        run: |
+          if [ ! -f "$AUDIT_CHECKLIST_PATH" ]; then
+            echo "::error::Checklist file missing"
+            exit 1
+          fi
+          python3 .github/scripts/checklist_gate.py \
+            --file "$AUDIT_CHECKLIST_PATH" \
+            --require-all-checked
+
+  # ----------------------------------------------------------------
+  # Stage 7 — Deployment to Sepolia
+  # ----------------------------------------------------------------
+  deploy:
+    name: "7 · Deploy to Sepolia"
+    runs-on: ubuntu-latest
+    needs: manual-review # Depends on Stage 6
+    environment: sepolia
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Deploy contracts to Sepolia
+        env:
+          DEPLOYER_KEY: ${{ secrets.DEPLOYER_KEY }}
+          RPC_URL: ${{ secrets.RPC_URL }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        run: |
+          forge script script/Deploy.s.sol:DeployScript \
+            --rpc-url "$RPC_URL" \
+            --private-key "$DEPLOYER_KEY" \
+            --broadcast \
+            --verify \
+            --slow
+
+      - name: Promote deployment manifest
+        run: |
+          mkdir -p reports
+          cp broadcast/Deploy.s.sol/11155111/run-latest.json reports/deployment-manifest.json
+
+      - name: Upload final security & deployment bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-bundle-sepolia-${{ github.sha }}
+          path: |
+            reports/
+          retention-days: 90
