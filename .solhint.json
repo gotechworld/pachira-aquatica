@@ -6,12 +6,15 @@
     "func-name-mixedcase": "off",
     "gas-increment-by-one": "off",
     "import-path-check": "off",
-    "no-tx-origin": "error",
     "no-inline-assembly": "warn",
-    "no-low-level-calls": "warn",
-    "no-selfdestruct": "error",
     "state-visibility": "error",
     "no-unused-vars": "error",
-    "func-visibility": ["error", { "ignoreConstructors": true }]
+    "func-visibility": ["error", { "ignoreConstructors": true }],
+    "one-contract-per-file": "off",
+    "no-global-import": "off",
+    "gas-indexed-events": "off",
+    "gas-custom-errors": "off",
+    "gas-strict-inequalities": "off",
+    "no-unused-import": "warn"
   }
 }
