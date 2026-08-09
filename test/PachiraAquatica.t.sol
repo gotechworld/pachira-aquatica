@@ -79,7 +79,12 @@ contract PachiraAquaticaTest is Test {
 
     // Test: Oracle Manipulation (Timeout)
     function testRevertOracleTimeout() public {
-        oracle.setUpdatedAt(block.timestamp - 2 hours);
+        // Fast forward time by 2 hours so we don't underflow when subtracting
+        vm.warp(2 hours);
+
+        // Set the oracle's last update to 0 (making it very stale)
+        oracle.setUpdatedAt(0);
+
         vm.expectRevert("Oracle: Timeout");
         token.getLatestPrice();
     }
