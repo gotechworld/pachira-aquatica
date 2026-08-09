@@ -77,6 +77,13 @@ contract PachiraAquaticaTest is Test {
         token.getLatestPrice();
     }
 
+    // Test: Oracle Manipulation (Timeout)
+    function testRevertOracleTimeout() public {
+        oracle.setUpdatedAt(block.timestamp - 2 hours);
+        vm.expectRevert("Oracle: Timeout");
+        token.getLatestPrice();
+    }
+
     // Test: Re-entrancy & Buy (0.01 ETH)
     function testBuyTokens() public {
         uint256 ethSent = 0.01 ether;
@@ -88,6 +95,12 @@ contract PachiraAquaticaTest is Test {
         assertEq(address(token).balance, ethSent);
     }
 
+    // Test: Buy Tokens with 0 ETH
+    function testRevertBuyTokensZeroETH() public {
+        vm.expectRevert("Must send ETH");
+        token.buyTokens();
+    }
+
     // Test: Authentication & Re-entrancy Withdraw (0.01 ETH)
     function testWithdrawEth() public {
         token.buyTokens{value: 0.01 ether}();
@@ -97,6 +110,26 @@ contract PachiraAquaticaTest is Test {
 
         assertEq(address(token).balance, 0);
         assertGt(owner.balance, ownerBalBefore);
+    }
+
+    // Test: Withdraw Eth only Owner
+    function testRevertWithdrawNonOwner() public {
+        token.buyTokens{value: 0.01 ether}();
+        vm.prank(address(0x123));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0x123)));
+        token.withdrawEth();
+    }
+
+    // Test: Withdraw Eth with 0 balance
+    function testRevertWithdrawZeroBalance() public {
+        vm.expectRevert("No ETH to withdraw");
+        token.withdrawEth();
+    }
+
+    // Test: setOracle with zero address
+    function testRevertSetOracleZeroAddress() public {
+        vm.expectRevert("Invalid oracle address");
+        token.setOracle(address(0));
     }
 }
 
